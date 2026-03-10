@@ -99,9 +99,14 @@ class JobcelisClient(
     // ── Webhooks ──────────────────────────────────────────────────────────
 
     /** Create a webhook. */
-    suspend fun createWebhook(url: String, extra: Map<String, Any>? = null): JsonObject {
+    suspend fun createWebhook(
+        url: String,
+        extra: Map<String, Any>? = null,
+        rateLimit: Map<String, Int>? = null
+    ): JsonObject {
         val body = mutableMapOf<String, Any>("url" to url)
         extra?.let { body.putAll(it) }
+        rateLimit?.let { body["rate_limit"] = it }
         return post("/api/v1/webhooks", body)
     }
 
@@ -114,8 +119,15 @@ class JobcelisClient(
         get("/api/v1/webhooks", buildParams("limit" to "$limit", "cursor" to cursor))
 
     /** Update a webhook. */
-    suspend fun updateWebhook(webhookId: String, data: Map<String, Any>): JsonObject =
-        patch("/api/v1/webhooks/$webhookId", data)
+    suspend fun updateWebhook(
+        webhookId: String,
+        data: Map<String, Any>,
+        rateLimit: Map<String, Int>? = null
+    ): JsonObject {
+        val body = data.toMutableMap()
+        rateLimit?.let { body["rate_limit"] = it }
+        return patch("/api/v1/webhooks/$webhookId", body)
+    }
 
     /** Delete a webhook. */
     suspend fun deleteWebhook(webhookId: String) {
@@ -129,6 +141,10 @@ class JobcelisClient(
     /** List available webhook templates. */
     suspend fun webhookTemplates(): JsonObject =
         get("/api/v1/webhooks/templates")
+
+    /** Send a test delivery to a webhook. */
+    suspend fun testWebhook(webhookId: String): JsonObject =
+        post("/api/v1/webhooks/$webhookId/test", emptyMap())
 
     // ── Deliveries ────────────────────────────────────────────────────────
 
@@ -396,6 +412,40 @@ class JobcelisClient(
     suspend fun listAuditLogs(limit: Int = 50, cursor: String? = null): JsonObject =
         get("/api/v1/audit-log", buildParams("limit" to "$limit", "cursor" to cursor))
 
+    // ── Embed Tokens ──────────────────────────────────────────────────────
+
+    /** List embed tokens. */
+    suspend fun listEmbedTokens(): JsonObject =
+        get("/api/v1/embed/tokens")
+
+    /** Create an embed token. */
+    suspend fun createEmbedToken(config: JsonObject): JsonObject =
+        post("/api/v1/embed/tokens", gson.fromJson(config, Map::class.java) as Map<String, Any>)
+
+    /** Revoke an embed token. */
+    suspend fun revokeEmbedToken(id: String) {
+        doDelete("/api/v1/embed/tokens/$id")
+    }
+
+    // ── Notification Channels ─────────────────────────────────────────────
+
+    /** Get the notification channel configuration. */
+    suspend fun getNotificationChannel(): JsonObject =
+        get("/api/v1/notification-channels")
+
+    /** Create or update the notification channel configuration. */
+    suspend fun upsertNotificationChannel(config: JsonObject): JsonObject =
+        put("/api/v1/notification-channels", gson.fromJson(config, Map::class.java) as Map<String, Any>)
+
+    /** Delete the notification channel configuration. */
+    suspend fun deleteNotificationChannel() {
+        doDelete("/api/v1/notification-channels")
+    }
+
+    /** Send a test notification to the configured channel. */
+    suspend fun testNotificationChannel(): JsonObject =
+        post("/api/v1/notification-channels/test", emptyMap())
+
     // ── Export ─────────────────────────────────────────────────────────────
 
     /** Export events as CSV or JSON. Returns raw string. */
@@ -446,6 +496,24 @@ class JobcelisClient(
         doDelete("/api/v1/me/object")
     }
 
+    // ── Retention & Purge ──────────────────────────────────────────────────
+
+    /** Get current retention policy. */
+    suspend fun getRetentionPolicy(): JsonObject =
+        get("/api/v1/retention")
+
+    /** Update retention policy. */
+    suspend fun updateRetentionPolicy(policy: Map<String, Any>): JsonObject =
+        patch("/api/v1/retention", policy)
+
+    /** Preview a purge operation. */
+    suspend fun previewPurge(params: Map<String, Any>): JsonObject =
+        post("/api/v1/purge/preview", params)
+
+    /** Execute a purge operation. */
+    suspend fun purgeData(params: Map<String, Any>): JsonObject =
+        post("/api/v1/purge", params)
+
     // ── Health ─────────────────────────────────────────────────────────────
 
     /** Check API health. */
@@ -463,6 +531,9 @@ class JobcelisClient(
 
     private suspend fun post(path: String, body: Map<String, Any>): JsonObject =
         request("POST", path, body = body)
+
+    private suspend fun put(path: String, body: Map<String, Any>): JsonObject =
+        request("PUT", path, body = body)
 
     private suspend fun patch(path: String, body: Map<String, Any>): JsonObject =
         request("PATCH", path, body = body)
