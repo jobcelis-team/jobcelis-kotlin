@@ -345,3 +345,7 @@ if (WebhookVerifier.verify("your_webhook_secret", body, signature)) {
 ## License
 
 BSL-1.1 (Business Source License)
+
+## Releasing
+
+Bump the version in `build.gradle.kts` and merge to `main`. The [Release workflow](.github/workflows/release.yml) publishes it to Maven Central and tags the commit. Changes that do not bump the version publish nothing.

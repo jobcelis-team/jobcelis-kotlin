@@ -1,7 +1,9 @@
+import com.vanniktech.maven.publish.SonatypeHost
+
 plugins {
     kotlin("jvm") version "2.3.0"
-    id("maven-publish")
-    id("signing")
+    // Publishes to Maven Central (Central Portal): sources, javadoc, POM and GPG signature
+    id("com.vanniktech.maven.publish") version "0.30.0"
 }
 
 group = "com.jobcelis"
@@ -20,8 +22,6 @@ dependencies {
 java {
     sourceCompatibility = JavaVersion.VERSION_22
     targetCompatibility = JavaVersion.VERSION_22
-    withSourcesJar()
-    withJavadocJar()
 }
 
 kotlin {
@@ -30,33 +30,36 @@ kotlin {
     }
 }
 
-publishing {
-    publications {
-        create<MavenPublication>("maven") {
-            from(components["java"])
-            pom {
-                artifactId = "jobcelis-kotlin"
-                name.set("Jobcelis Kotlin SDK")
-                description.set("Official Kotlin SDK for the Jobcelis Event Infrastructure Platform")
-                url.set("https://github.com/jobcelis-team/jobcelis-kotlin")
-                licenses {
-                    license {
-                        name.set("Business Source License 1.1")
-                        url.set("https://github.com/jobcelis-team/jobscelis/blob/main/LICENSE")
-                    }
-                }
-                developers {
-                    developer {
-                        id.set("jobcelis-team")
-                        name.set("Vladimir Celi")
-                    }
-                }
-                scm {
-                    connection.set("scm:git:git://github.com/jobcelis-team/jobcelis-kotlin.git")
-                    developerConnection.set("scm:git:ssh://github.com/jobcelis-team/jobcelis-kotlin.git")
-                    url.set("https://github.com/jobcelis-team/jobcelis-kotlin")
-                }
+mavenPublishing {
+    // Credentials and signing key come from the ORG_GRADLE_PROJECT_* variables
+    // set by .github/workflows/release.yml (repo secrets).
+    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)
+    // Signed in CI (the key is only there); local builds and publishToMavenLocal stay unsigned
+    if (providers.gradleProperty("signingInMemoryKey").isPresent) {
+        signAllPublications()
+    }
+    coordinates("com.jobcelis", "jobcelis-kotlin", version.toString())
+
+    pom {
+        name.set("Jobcelis Kotlin SDK")
+        description.set("Official Kotlin SDK for the Jobcelis Event Infrastructure Platform")
+        url.set("https://github.com/jobcelis-team/jobcelis-kotlin")
+        licenses {
+            license {
+                name.set("Business Source License 1.1")
+                url.set("https://github.com/jobcelis-team/jobscelis/blob/main/LICENSE")
             }
+        }
+        developers {
+            developer {
+                id.set("jobcelis-team")
+                name.set("Vladimir Celi")
+            }
+        }
+        scm {
+            connection.set("scm:git:git://github.com/jobcelis-team/jobcelis-kotlin.git")
+            developerConnection.set("scm:git:ssh://github.com/jobcelis-team/jobcelis-kotlin.git")
+            url.set("https://github.com/jobcelis-team/jobcelis-kotlin")
         }
     }
 }
