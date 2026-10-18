@@ -1,5 +1,3 @@
-import com.vanniktech.maven.publish.SonatypeHost
-
 plugins {
     kotlin("jvm") version "2.4.21"
     // Publishes to Maven Central (Central Portal): sources, javadoc, POM and GPG signature
@@ -33,7 +31,7 @@ kotlin {
 mavenPublishing {
     // Credentials and signing key come from the ORG_GRADLE_PROJECT_* variables
     // set by .github/workflows/release.yml (repo secrets).
-    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL, automaticRelease = true)
+    publishToMavenCentral(automaticRelease = true)
     // Signed in CI (the key is only there); local builds and publishToMavenLocal stay unsigned
     if (providers.gradleProperty("signingInMemoryKey").isPresent) {
         signAllPublications()
