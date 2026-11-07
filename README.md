@@ -348,4 +348,4 @@ BSL-1.1 (Business Source License)
 
 ## Releasing
 
-Bump the version in `build.gradle.kts` and merge to `main`. The [Release workflow](.github/workflows/release.yml) publishes it to Maven Central and tags the commit. Changes that do not bump the version publish nothing.
+Merge to `main`: the [Release workflow](.github/workflows/release.yml) publishes every change to the package as the next patch version (1.3.1 → 1.3.2) to Maven Central, writes the version into `build.gradle.kts` and tags the commit. Changes to docs, tests or CI publish nothing. For a minor or major version, raise it in `build.gradle.kts` in the same pull request. Every pull request runs [CI](.github/workflows/check-release.yml).
