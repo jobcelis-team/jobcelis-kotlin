@@ -327,6 +327,27 @@ try {
 }
 ```
 
+## Retries
+
+Failed requests are retried automatically, so a short API outage (for example during a deploy) does not lose your calls:
+
+- Retried: network errors (connection refused or reset, DNS, TLS, timeouts) and HTTP `429`, `502`, `503` and `504`.
+- `GET`, `PUT`, `PATCH` and `DELETE` are retried on all of these. `POST` is retried on `429`/`502`/`503`/`504`, and on network errors only when it carries an idempotency key.
+- Backoff is exponential (1 s, 2 s, 4 s, ... up to 30 s, with ±20 % jitter). A `Retry-After` header is honored (up to 60 s).
+- Default: 6 retries, about 60 seconds in total. After the last retry you get the same `JobcelisException` (or `IOException`) as without retries.
+
+Events are never duplicated by a retry: `sendEvent` sends a random `X-Idempotency-Key` header (the same one on every retry), and `sendEvents` adds an `idempotency_key` to every event that does not have one. To use your own key:
+
+```kotlin
+client.sendEvent("order.created", mapOf("order_id" to "123"), idempotencyKey = "order-123-created")
+```
+
+Change or disable retries with `maxRetries`:
+
+```kotlin
+val client = JobcelisClient("your_api_key", maxRetries = 3) // 0 disables retries
+```
+
 ## Webhook Signature Verification
 
 ```kotlin
@@ -348,4 +369,4 @@ BSL-1.1 (Business Source License)
 
 ## Releasing
 
-Merge to `main`: the [Release workflow](.github/workflows/release.yml) publishes every change to the package as the next patch version (1.3.1 → 1.3.2) to Maven Central, writes the version into `build.gradle.kts` and tags the commit. Changes to docs, tests or CI publish nothing. For a minor or major version, raise it in `build.gradle.kts` in the same pull request. Every pull request runs [CI](.github/workflows/check-release.yml).
+Merge to `main`: the [Release workflow](.github/workflows/release.yml) publishes every change to the package as the next patch version (1.3.1 → 1.3.2) to Maven Central, writes the version into `build.gradle.kts` and tags the commit. Changes to docs, tests or CI publish nothing. For a minor or major version, raise it in `build.gradle.kts` in the same pull request. Every pull request runs the [tests](.github/workflows/ci.yml) and [checks the publication](.github/workflows/check-release.yml).
