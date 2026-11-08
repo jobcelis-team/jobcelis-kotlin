@@ -4,13 +4,21 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import java.io.Closeable
+import java.io.IOException
 import java.net.URLEncoder
+import java.time.Duration
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.util.UUID
+import kotlin.random.Random
 
 /**
  * Client for the Jobcelis Event Infrastructure Platform API.
@@ -22,16 +30,36 @@ import java.net.URLEncoder
  * val event = client.sendEvent("order.created", mapOf("order_id" to "123"))
  * ```
  *
+ * Failed requests are retried automatically on network errors and on HTTP 429, 502, 503
+ * and 504, with exponential backoff (see [maxRetries]).
+ *
  * @property apiKey Your Jobcelis API key.
  * @property baseURL Base URL of the Jobcelis API.
+ * @property maxRetries How many times a failed request is retried (default 6, about 60 seconds
+ *   in total). `0` disables retries.
  */
 class JobcelisClient(
     private val apiKey: String,
     baseURL: String = "https://jobcelis.com",
-    private val httpClient: OkHttpClient = OkHttpClient()
+    private val httpClient: OkHttpClient = OkHttpClient(),
+    private val maxRetries: Int = DEFAULT_MAX_RETRIES
 ) : Closeable {
 
+    /** Same as the primary constructor with the default [maxRetries]; kept for binary compatibility. */
+    constructor(
+        apiKey: String,
+        baseURL: String = "https://jobcelis.com",
+        httpClient: OkHttpClient = OkHttpClient()
+    ) : this(apiKey, baseURL, httpClient, DEFAULT_MAX_RETRIES)
+
+    init {
+        require(maxRetries >= 0) { "maxRetries must be >= 0" }
+    }
+
     private val baseURL = baseURL.trimEnd('/')
+
+    /** Base delay of the exponential backoff, in milliseconds. Tests lower it to avoid sleeping. */
+    internal var retryBaseDelayMillis: Long = 1_000L
     private var authToken: String? = null
     private val gson = Gson()
     private val jsonMediaType = "application/json".toMediaType()
@@ -69,13 +97,40 @@ class JobcelisClient(
 
     // ── Events ────────────────────────────────────────────────────────────
 
-    /** Send a single event. */
+    /**
+     * Send a single event.
+     *
+     * A random idempotency key is sent in the `X-Idempotency-Key` header, so automatic
+     * retries never create the event twice.
+     */
     suspend fun sendEvent(topic: String, payload: Map<String, Any>): JsonObject =
-        post("/api/v1/events", mapOf("topic" to topic, "payload" to payload))
+        sendEvent(topic, payload, UUID.randomUUID().toString())
 
-    /** Send up to 1000 events in a batch. */
-    suspend fun sendEvents(events: List<Map<String, Any>>): JsonObject =
-        post("/api/v1/events/batch", mapOf("events" to events))
+    /**
+     * Send a single event with your own idempotency key (sent in the `X-Idempotency-Key`
+     * header). The API ignores repeated events with the same key.
+     */
+    suspend fun sendEvent(topic: String, payload: Map<String, Any>, idempotencyKey: String): JsonObject =
+        request(
+            "POST",
+            "/api/v1/events",
+            body = mapOf("topic" to topic, "payload" to payload),
+            idempotencyKey = idempotencyKey
+        )
+
+    /**
+     * Send up to 1000 events in a batch.
+     *
+     * Every event without an `idempotency_key` gets a random one, so automatic retries
+     * never create an event twice.
+     */
+    suspend fun sendEvents(events: List<Map<String, Any>>): JsonObject {
+        val withKeys = events.map { event ->
+            if (event.containsKey("idempotency_key")) event
+            else event + ("idempotency_key" to UUID.randomUUID().toString())
+        }
+        return request("POST", "/api/v1/events/batch", body = mapOf("events" to withKeys), idempotent = true)
+    }
 
     /** Get event details. */
     suspend fun getEvent(eventId: String): JsonObject =
@@ -563,8 +618,8 @@ class JobcelisClient(
                 .apply { authToken?.let { addHeader("Authorization", "Bearer $it") } }
                 .build()
 
-            httpClient.newCall(request).execute().use { response ->
-                val responseBody = response.body?.string() ?: ""
+            execute(request, idempotent = true) { response ->
+                val responseBody = response.body.string()
                 if (!response.isSuccessful) {
                     throw JobcelisException(response.code, responseBody)
                 }
@@ -582,16 +637,16 @@ class JobcelisClient(
                 .addHeader("Content-Type", "application/json")
                 .build()
 
-            httpClient.newCall(request).execute().use { response ->
-                handleResponse(response)
-            }
+            execute(request, false, ::handleResponse)
         }
 
     private suspend fun request(
         method: String,
         path: String,
         params: Map<String, String> = emptyMap(),
-        body: Map<String, Any>? = null
+        body: Map<String, Any>? = null,
+        idempotencyKey: String? = null,
+        idempotent: Boolean = method != "POST" || idempotencyKey != null
     ): JsonObject = withContext(Dispatchers.IO) {
         val url = buildURL(path, params)
         val jsonBody = if (body != null && method in listOf("POST", "PATCH", "PUT")) {
@@ -605,16 +660,62 @@ class JobcelisClient(
             .addHeader("Accept", "application/json")
             .addHeader("X-Api-Key", apiKey)
             .apply { authToken?.let { addHeader("Authorization", "Bearer $it") } }
+            .apply { idempotencyKey?.let { addHeader(IDEMPOTENCY_HEADER, it) } }
             .build()
 
-        httpClient.newCall(request).execute().use { response ->
-            handleResponse(response)
+        execute(request, idempotent, ::handleResponse)
+    }
+
+    /**
+     * Runs [request], retrying on HTTP 429/502/503/504 and, when [idempotent], on network
+     * errors. The same request (headers and body) is sent on every attempt. After the last
+     * attempt the response is handed to [handle], or the network error is rethrown.
+     */
+    private suspend fun <T> execute(request: Request, idempotent: Boolean, handle: (Response) -> T): T {
+        var retry = 0
+        while (true) {
+            val response = try {
+                httpClient.newCall(request).execute()
+            } catch (e: IOException) {
+                if (!idempotent || retry >= maxRetries) throw e
+                retry++
+                delay(retryDelayMillis(retry, null))
+                continue
+            }
+            if (response.code in RETRYABLE_STATUSES && retry < maxRetries) {
+                val retryAfter = response.header("Retry-After")
+                response.close()
+                retry++
+                delay(retryDelayMillis(retry, retryAfter))
+                continue
+            }
+            return response.use(handle)
         }
     }
 
-    private fun handleResponse(response: okhttp3.Response): JsonObject {
+    /** Delay before retry number [retry] (1 = first retry). */
+    private fun retryDelayMillis(retry: Int, retryAfter: String?): Long {
+        parseRetryAfterMillis(retryAfter)?.let { return it.coerceIn(0L, MAX_RETRY_AFTER_MILLIS) }
+        val exponential = retryBaseDelayMillis * (1L shl (retry - 1).coerceAtMost(30))
+        val capped = minOf(exponential, MAX_BACKOFF_MILLIS)
+        val jitter = 0.8 + Random.nextDouble() * 0.4
+        return (capped * jitter).toLong()
+    }
+
+    private fun parseRetryAfterMillis(value: String?): Long? {
+        val v = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        v.toLongOrNull()?.let { return it * 1_000L }
+        return try {
+            val date = ZonedDateTime.parse(v, DateTimeFormatter.RFC_1123_DATE_TIME)
+            Duration.between(ZonedDateTime.now(date.zone), date).toMillis()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun handleResponse(response: Response): JsonObject {
         val statusCode = response.code
-        val responseBody = response.body?.string() ?: ""
+        val responseBody = response.body.string()
 
         if (statusCode == 204) return JsonObject()
 
@@ -642,4 +743,12 @@ class JobcelisClient(
 
     private fun buildParams(vararg pairs: Pair<String, String?>): Map<String, String> =
         pairs.filter { it.second != null }.associate { it.first to it.second!! }
+
+    private companion object {
+        const val DEFAULT_MAX_RETRIES = 6
+        const val IDEMPOTENCY_HEADER = "X-Idempotency-Key"
+        const val MAX_BACKOFF_MILLIS = 30_000L
+        const val MAX_RETRY_AFTER_MILLIS = 60_000L
+        val RETRYABLE_STATUSES = setOf(429, 502, 503, 504)
+    }
 }
