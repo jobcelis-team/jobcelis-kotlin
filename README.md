@@ -9,13 +9,13 @@ All API calls go to `https://jobcelis.com` by default -- you only need your API 
 ### Gradle (Kotlin DSL)
 
 ```kotlin
-implementation("com.jobcelis:jobcelis-kotlin:1.0.0")
+implementation("com.jobcelis:jobcelis-kotlin:1.5.0")
 ```
 
 ### Gradle (Groovy)
 
 ```groovy
-implementation 'com.jobcelis:jobcelis-kotlin:1.0.0'
+implementation 'com.jobcelis:jobcelis-kotlin:1.5.0'
 ```
 
 ### Maven
@@ -24,14 +24,16 @@ implementation 'com.jobcelis:jobcelis-kotlin:1.0.0'
 <dependency>
     <groupId>com.jobcelis</groupId>
     <artifactId>jobcelis-kotlin</artifactId>
-    <version>1.0.0</version>
+    <version>1.5.0</version>
 </dependency>
 ```
 
 ## Requirements
 
-- Kotlin 1.9+ / Java 11+
+- Kotlin 1.9+ / Java 17+ (also usable from Android)
 - Coroutines support (`kotlinx-coroutines-core`)
+
+> **Keep your API key secret.** The project API key gives full access to your project. Do not embed it in Android apps or any other code that runs on your users' devices, where it can be extracted from the APK. Call Jobcelis from your own backend, or give clients a scoped embed token (`createEmbedToken`) instead.
 
 ## Quick Start
 
@@ -46,6 +48,11 @@ fun main() = runBlocking {
     client.close()
 }
 ```
+
+> **Your own OkHttpClient:** pass it as `httpClient` to share a connection pool or set timeouts and interceptors. `close()` only shuts down the OkHttpClient the SDK created itself; one you pass in stays yours to manage.
+> ```kotlin
+> val client = JobcelisClient("your_api_key", httpClient = myOkHttpClient)
+> ```
 
 > **Custom URL:** If you're self-hosting Jobcelis, you can override the base URL:
 > ```kotlin
@@ -176,7 +183,8 @@ val preview = client.cronPreview("0 9 * * *", 10)
 ## Pipelines
 
 ```kotlin
-val pipeline = client.createPipeline("order-processing",
+// The pipeline delivers to an existing webhook (required by the API)
+val pipeline = client.createPipeline("order-processing", "wh_abc123",
     listOf("order.created"),
     listOf(
         mapOf("type" to "filter", "config" to mapOf("field" to "amount", "gt" to 100)),
@@ -190,8 +198,8 @@ client.updatePipeline("pipe_abc123", mapOf("name" to "order-processing-v2"))
 client.deletePipeline("pipe_abc123")
 
 // Test a pipeline with a sample payload
-val testResult = client.testPipeline("pipe_abc123",
-    mapOf("topic" to "order.created", "payload" to mapOf("id" to "1")))
+// (sent as {"payload": {...}})
+val testResult = client.testPipeline("pipe_abc123", mapOf("id" to "1", "amount" to 150))
 ```
 
 ## Event Schemas
@@ -261,7 +269,7 @@ client.deleteProject("proj_abc123")
 
 ```kotlin
 val members = client.listMembers("proj_abc123")
-val member = client.addMember("proj_abc123", "alice@example.com", "admin")
+val member = client.addMember("proj_abc123", "alice@example.com", "editor") // "editor" or "viewer" (default)
 client.updateMember("proj_abc123", "mem_abc123", "viewer")
 client.removeMember("proj_abc123", "mem_abc123")
 ```
@@ -297,7 +305,7 @@ client.exportAuditLog("csv")
 val consents = client.getConsents()
 client.acceptConsent("marketing")
 val myData = client.exportMyData()
-client.restrictProcessing()
+client.restrictProcessing("your_account_password") // the API asks for the password
 client.liftRestriction()
 client.objectToProcessing()
 client.restoreConsent()
@@ -307,7 +315,7 @@ client.restoreConsent()
 
 ```kotlin
 val health = client.health()
-val status = client.status()
+val status = client.status() // same as health(): GET /health
 ```
 
 ## Error Handling

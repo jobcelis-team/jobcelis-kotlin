@@ -5,16 +5,17 @@ plugins {
 }
 
 group = "com.jobcelis"
-version = "1.4.0"
+version = "1.5.0"
 
 repositories {
     mavenCentral()
 }
 
 dependencies {
-    implementation("com.google.code.gson:gson:2.15.0")
+    // Gson (JsonObject) and OkHttp (OkHttpClient) types appear in the public API
+    api("com.google.code.gson:gson:2.15.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
-    implementation("com.squareup.okhttp3:okhttp:5.5.1")
+    api("com.squareup.okhttp3:okhttp:5.5.1")
 
     testImplementation(kotlin("test"))
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
@@ -27,14 +28,15 @@ tasks.test {
     }
 }
 
+// Bytecode for Java 17, so JVM 17/21 and Android consumers can use the library
 java {
-    sourceCompatibility = JavaVersion.VERSION_22
-    targetCompatibility = JavaVersion.VERSION_22
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
 }
 
 kotlin {
     compilerOptions {
-        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_22)
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
