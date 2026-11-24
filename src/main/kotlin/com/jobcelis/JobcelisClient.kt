@@ -37,11 +37,15 @@ import kotlin.random.Random
  * @property baseURL Base URL of the Jobcelis API.
  * @property maxRetries How many times a failed request is retried (default 6, about 60 seconds
  *   in total). `0` disables retries.
+ * @param httpClient Your own [OkHttpClient], or `null` (the default) to let the client create
+ *   one. [close] only shuts down a client created here; one you pass in stays yours to manage.
+ *
+ * Every call is a `suspend` function that runs its HTTP request on [Dispatchers.IO].
  */
 class JobcelisClient(
     private val apiKey: String,
     baseURL: String = "https://jobcelis.com",
-    private val httpClient: OkHttpClient = OkHttpClient(),
+    httpClient: OkHttpClient? = null,
     private val maxRetries: Int = DEFAULT_MAX_RETRIES
 ) : Closeable {
 
@@ -49,8 +53,12 @@ class JobcelisClient(
     constructor(
         apiKey: String,
         baseURL: String = "https://jobcelis.com",
-        httpClient: OkHttpClient = OkHttpClient()
+        httpClient: OkHttpClient? = null
     ) : this(apiKey, baseURL, httpClient, DEFAULT_MAX_RETRIES)
+
+    /** True when this instance created [httpClient] and so must shut it down in [close]. */
+    private val ownsHttpClient: Boolean = httpClient == null
+    private val httpClient: OkHttpClient = httpClient ?: OkHttpClient()
 
     init {
         require(maxRetries >= 0) { "maxRetries must be >= 0" }
@@ -60,6 +68,7 @@ class JobcelisClient(
 
     /** Base delay of the exponential backoff, in milliseconds. Tests lower it to avoid sleeping. */
     internal var retryBaseDelayMillis: Long = 1_000L
+    @Volatile
     private var authToken: String? = null
     private val gson = Gson()
     private val jsonMediaType = "application/json".toMediaType()
@@ -69,7 +78,9 @@ class JobcelisClient(
         authToken = token
     }
 
+    /** Releases the HTTP client if this instance created it; a client you passed in is left untouched. */
     override fun close() {
+        if (!ownsHttpClient) return
         httpClient.dispatcher.executorService.shutdown()
         httpClient.connectionPool.evictAll()
     }
@@ -134,7 +145,7 @@ class JobcelisClient(
 
     /** Get event details. */
     suspend fun getEvent(eventId: String): JsonObject =
-        get("/api/v1/events/$eventId")
+        get("/api/v1/events/${enc(eventId)}")
 
     /** List events with cursor pagination. */
     suspend fun listEvents(limit: Int = 50, cursor: String? = null): JsonObject =
@@ -142,7 +153,7 @@ class JobcelisClient(
 
     /** Delete an event. */
     suspend fun deleteEvent(eventId: String) {
-        doDelete("/api/v1/events/$eventId")
+        doDelete("/api/v1/events/${enc(eventId)}")
     }
 
     // ── Simulate ──────────────────────────────────────────────────────────
@@ -167,7 +178,7 @@ class JobcelisClient(
 
     /** Get webhook details. */
     suspend fun getWebhook(webhookId: String): JsonObject =
-        get("/api/v1/webhooks/$webhookId")
+        get("/api/v1/webhooks/${enc(webhookId)}")
 
     /** List webhooks. */
     suspend fun listWebhooks(limit: Int = 50, cursor: String? = null): JsonObject =
@@ -181,17 +192,17 @@ class JobcelisClient(
     ): JsonObject {
         val body = data.toMutableMap()
         rateLimit?.let { body["rate_limit"] = it }
-        return patch("/api/v1/webhooks/$webhookId", body)
+        return patch("/api/v1/webhooks/${enc(webhookId)}", body)
     }
 
     /** Delete a webhook. */
     suspend fun deleteWebhook(webhookId: String) {
-        doDelete("/api/v1/webhooks/$webhookId")
+        doDelete("/api/v1/webhooks/${enc(webhookId)}")
     }
 
     /** Get health status for a webhook. */
     suspend fun webhookHealth(webhookId: String): JsonObject =
-        get("/api/v1/webhooks/$webhookId/health")
+        get("/api/v1/webhooks/${enc(webhookId)}/health")
 
     /** List available webhook templates. */
     suspend fun webhookTemplates(): JsonObject =
@@ -199,7 +210,7 @@ class JobcelisClient(
 
     /** Send a test delivery to a webhook. */
     suspend fun testWebhook(webhookId: String): JsonObject =
-        post("/api/v1/webhooks/$webhookId/test", emptyMap())
+        post("/api/v1/webhooks/${enc(webhookId)}/test", emptyMap())
 
     // ── Deliveries ────────────────────────────────────────────────────────
 
@@ -209,7 +220,7 @@ class JobcelisClient(
 
     /** Retry a failed delivery. */
     suspend fun retryDelivery(deliveryId: String): JsonObject =
-        post("/api/v1/deliveries/$deliveryId/retry", emptyMap())
+        post("/api/v1/deliveries/${enc(deliveryId)}/retry", emptyMap())
 
     // ── Dead Letters ──────────────────────────────────────────────────────
 
@@ -219,15 +230,15 @@ class JobcelisClient(
 
     /** Get dead letter details. */
     suspend fun getDeadLetter(deadLetterId: String): JsonObject =
-        get("/api/v1/dead-letters/$deadLetterId")
+        get("/api/v1/dead-letters/${enc(deadLetterId)}")
 
     /** Retry a dead letter. */
     suspend fun retryDeadLetter(deadLetterId: String): JsonObject =
-        post("/api/v1/dead-letters/$deadLetterId/retry", emptyMap())
+        post("/api/v1/dead-letters/${enc(deadLetterId)}/retry", emptyMap())
 
     /** Mark a dead letter as resolved. */
     suspend fun resolveDeadLetter(deadLetterId: String): JsonObject =
-        patch("/api/v1/dead-letters/$deadLetterId/resolve", emptyMap())
+        patch("/api/v1/dead-letters/${enc(deadLetterId)}/resolve", emptyMap())
 
     // ── Replays ───────────────────────────────────────────────────────────
 
@@ -244,11 +255,11 @@ class JobcelisClient(
 
     /** Get replay details. */
     suspend fun getReplay(replayId: String): JsonObject =
-        get("/api/v1/replays/$replayId")
+        get("/api/v1/replays/${enc(replayId)}")
 
     /** Cancel a replay. */
     suspend fun cancelReplay(replayId: String) {
-        doDelete("/api/v1/replays/$replayId")
+        doDelete("/api/v1/replays/${enc(replayId)}")
     }
 
     // ── Jobs ──────────────────────────────────────────────────────────────
@@ -266,20 +277,20 @@ class JobcelisClient(
 
     /** Get job details. */
     suspend fun getJob(jobId: String): JsonObject =
-        get("/api/v1/jobs/$jobId")
+        get("/api/v1/jobs/${enc(jobId)}")
 
     /** Update a scheduled job. */
     suspend fun updateJob(jobId: String, data: Map<String, Any>): JsonObject =
-        patch("/api/v1/jobs/$jobId", data)
+        patch("/api/v1/jobs/${enc(jobId)}", data)
 
     /** Delete a scheduled job. */
     suspend fun deleteJob(jobId: String) {
-        doDelete("/api/v1/jobs/$jobId")
+        doDelete("/api/v1/jobs/${enc(jobId)}")
     }
 
     /** List runs for a scheduled job. */
     suspend fun listJobRuns(jobId: String, limit: Int = 50): JsonObject =
-        get("/api/v1/jobs/$jobId/runs", buildParams("limit" to "$limit"))
+        get("/api/v1/jobs/${enc(jobId)}/runs", buildParams("limit" to "$limit"))
 
     /** Preview next occurrences for a cron expression. */
     suspend fun cronPreview(expression: String, count: Int = 5): JsonObject =
@@ -287,7 +298,23 @@ class JobcelisClient(
 
     // ── Pipelines ─────────────────────────────────────────────────────────
 
-    /** Create an event pipeline. */
+    /** Create an event pipeline that delivers to the webhook [webhookId] (required by the API). */
+    suspend fun createPipeline(
+        name: String,
+        webhookId: String,
+        topics: List<String> = emptyList(),
+        steps: List<Map<String, Any>> = emptyList()
+    ): JsonObject =
+        post(
+            "/api/v1/pipelines",
+            mapOf("name" to name, "webhook_id" to webhookId, "topics" to topics, "steps" to steps)
+        )
+
+    /** Create an event pipeline without a webhook. The API rejects it (HTTP 422): it requires a webhook. */
+    @Deprecated(
+        "The API requires a webhook_id",
+        ReplaceWith("createPipeline(name, webhookId, topics, steps)")
+    )
     suspend fun createPipeline(name: String, topics: List<String>, steps: List<Map<String, Any>>): JsonObject =
         post("/api/v1/pipelines", mapOf("name" to name, "topics" to topics, "steps" to steps))
 
@@ -297,20 +324,20 @@ class JobcelisClient(
 
     /** Get pipeline details. */
     suspend fun getPipeline(pipelineId: String): JsonObject =
-        get("/api/v1/pipelines/$pipelineId")
+        get("/api/v1/pipelines/${enc(pipelineId)}")
 
     /** Update a pipeline. */
     suspend fun updatePipeline(pipelineId: String, data: Map<String, Any>): JsonObject =
-        patch("/api/v1/pipelines/$pipelineId", data)
+        patch("/api/v1/pipelines/${enc(pipelineId)}", data)
 
     /** Delete a pipeline. */
     suspend fun deletePipeline(pipelineId: String) {
-        doDelete("/api/v1/pipelines/$pipelineId")
+        doDelete("/api/v1/pipelines/${enc(pipelineId)}")
     }
 
-    /** Test a pipeline with a sample payload. */
+    /** Test a pipeline with a sample payload (sent as `{"payload": ...}`). */
     suspend fun testPipeline(pipelineId: String, payload: Map<String, Any>): JsonObject =
-        post("/api/v1/pipelines/$pipelineId/test", payload)
+        post("/api/v1/pipelines/${enc(pipelineId)}/test", mapOf("payload" to payload))
 
     // ── Event Schemas ─────────────────────────────────────────────────────
 
@@ -324,15 +351,15 @@ class JobcelisClient(
 
     /** Get event schema details. */
     suspend fun getEventSchema(schemaId: String): JsonObject =
-        get("/api/v1/event-schemas/$schemaId")
+        get("/api/v1/event-schemas/${enc(schemaId)}")
 
     /** Update an event schema. */
     suspend fun updateEventSchema(schemaId: String, data: Map<String, Any>): JsonObject =
-        patch("/api/v1/event-schemas/$schemaId", data)
+        patch("/api/v1/event-schemas/${enc(schemaId)}", data)
 
     /** Delete an event schema. */
     suspend fun deleteEventSchema(schemaId: String) {
-        doDelete("/api/v1/event-schemas/$schemaId")
+        doDelete("/api/v1/event-schemas/${enc(schemaId)}")
     }
 
     /** Validate a payload against the schema for a topic. */
@@ -354,12 +381,12 @@ class JobcelisClient(
 
     /** Delete a sandbox endpoint. */
     suspend fun deleteSandboxEndpoint(endpointId: String) {
-        doDelete("/api/v1/sandbox-endpoints/$endpointId")
+        doDelete("/api/v1/sandbox-endpoints/${enc(endpointId)}")
     }
 
     /** List requests received by a sandbox endpoint. */
     suspend fun listSandboxRequests(endpointId: String, limit: Int = 50): JsonObject =
-        get("/api/v1/sandbox-endpoints/$endpointId/requests", buildParams("limit" to "$limit"))
+        get("/api/v1/sandbox-endpoints/${enc(endpointId)}/requests", buildParams("limit" to "$limit"))
 
     // ── Analytics ─────────────────────────────────────────────────────────
 
@@ -424,38 +451,38 @@ class JobcelisClient(
 
     /** Get project by ID. */
     suspend fun getProjectById(projectId: String): JsonObject =
-        get("/api/v1/projects/$projectId")
+        get("/api/v1/projects/${enc(projectId)}")
 
     /** Update a project by ID. */
     suspend fun updateProjectById(projectId: String, data: Map<String, Any>): JsonObject =
-        patch("/api/v1/projects/$projectId", data)
+        patch("/api/v1/projects/${enc(projectId)}", data)
 
     /** Delete a project. */
     suspend fun deleteProject(projectId: String) {
-        doDelete("/api/v1/projects/$projectId")
+        doDelete("/api/v1/projects/${enc(projectId)}")
     }
 
     /** Set a project as the default. */
     suspend fun setDefaultProject(projectId: String): JsonObject =
-        patch("/api/v1/projects/$projectId/default", emptyMap())
+        patch("/api/v1/projects/${enc(projectId)}/default", emptyMap())
 
     // ── Teams ─────────────────────────────────────────────────────────────
 
     /** List members of a project. */
     suspend fun listMembers(projectId: String): JsonObject =
-        get("/api/v1/projects/$projectId/members")
+        get("/api/v1/projects/${enc(projectId)}/members")
 
     /** Add a member to a project. */
-    suspend fun addMember(projectId: String, email: String, role: String = "member"): JsonObject =
-        post("/api/v1/projects/$projectId/members", mapOf("email" to email, "role" to role))
+    suspend fun addMember(projectId: String, email: String, role: String = "viewer"): JsonObject =
+        post("/api/v1/projects/${enc(projectId)}/members", mapOf("email" to email, "role" to role))
 
     /** Update a member's role. */
     suspend fun updateMember(projectId: String, memberId: String, role: String): JsonObject =
-        patch("/api/v1/projects/$projectId/members/$memberId", mapOf("role" to role))
+        patch("/api/v1/projects/${enc(projectId)}/members/${enc(memberId)}", mapOf("role" to role))
 
     /** Remove a member from a project. */
     suspend fun removeMember(projectId: String, memberId: String) {
-        doDelete("/api/v1/projects/$projectId/members/$memberId")
+        doDelete("/api/v1/projects/${enc(projectId)}/members/${enc(memberId)}")
     }
 
     // ── Invitations ───────────────────────────────────────────────────────
@@ -466,11 +493,11 @@ class JobcelisClient(
 
     /** Accept an invitation. */
     suspend fun acceptInvitation(invitationId: String): JsonObject =
-        post("/api/v1/invitations/$invitationId/accept", emptyMap())
+        post("/api/v1/invitations/${enc(invitationId)}/accept", emptyMap())
 
     /** Reject an invitation. */
     suspend fun rejectInvitation(invitationId: String): JsonObject =
-        post("/api/v1/invitations/$invitationId/reject", emptyMap())
+        post("/api/v1/invitations/${enc(invitationId)}/reject", emptyMap())
 
     // ── Audit ─────────────────────────────────────────────────────────────
 
@@ -490,7 +517,7 @@ class JobcelisClient(
 
     /** Revoke an embed token. */
     suspend fun revokeEmbedToken(id: String) {
-        doDelete("/api/v1/embed/tokens/$id")
+        doDelete("/api/v1/embed/tokens/${enc(id)}")
     }
 
     // ── Notification Channels ─────────────────────────────────────────────
@@ -538,15 +565,15 @@ class JobcelisClient(
 
     /** Accept consent for a specific purpose. */
     suspend fun acceptConsent(purpose: String): JsonObject =
-        post("/api/v1/me/consents/$purpose/accept", emptyMap())
+        post("/api/v1/me/consents/${enc(purpose)}/accept", emptyMap())
 
     /** Export all personal data (GDPR data portability). */
     suspend fun exportMyData(): JsonObject =
         get("/api/v1/me/data")
 
-    /** Request restriction of data processing. */
-    suspend fun restrictProcessing(): JsonObject =
-        post("/api/v1/me/restrict", emptyMap())
+    /** Request restriction of data processing. The API asks for the account [password]. */
+    suspend fun restrictProcessing(password: String): JsonObject =
+        post("/api/v1/me/restrict", mapOf("password" to password))
 
     /** Lift restriction on data processing. */
     suspend fun liftRestriction() {
@@ -568,9 +595,12 @@ class JobcelisClient(
     suspend fun getRetentionPolicy(): JsonObject =
         get("/api/v1/retention")
 
-    /** Update retention policy. */
+    /**
+     * Update retention policy, e.g. `mapOf("events_days" to 30, "deliveries_days" to 14)`
+     * (sent as `{"retention_policy": ...}`).
+     */
     suspend fun updateRetentionPolicy(policy: Map<String, Any>): JsonObject =
-        patch("/api/v1/retention", policy)
+        patch("/api/v1/retention", mapOf("retention_policy" to policy))
 
     /** Preview a purge operation. */
     suspend fun previewPurge(params: Map<String, Any>): JsonObject =
@@ -586,9 +616,9 @@ class JobcelisClient(
     suspend fun health(): JsonObject =
         get("/health")
 
-    /** Get platform status. */
+    /** Get platform status. Same as [health]: `/status` is the public status web page, not JSON. */
     suspend fun status(): JsonObject =
-        get("/status")
+        health()
 
     // ── Private HTTP helpers ──────────────────────────────────────────────
 
@@ -740,6 +770,10 @@ class JobcelisClient(
         }
         return sb.toString()
     }
+
+    /** Percent-encodes one path segment (spaces as %20, slashes escaped). */
+    private fun enc(segment: String): String =
+        URLEncoder.encode(segment, "UTF-8").replace("+", "%20")
 
     private fun buildParams(vararg pairs: Pair<String, String?>): Map<String, String> =
         pairs.filter { it.second != null }.associate { it.first to it.second!! }
